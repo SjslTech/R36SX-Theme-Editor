@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>R36SX Theme Editor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #0f0f0f; color: #eee; margin: 0; display: flex; height: 100vh; overflow: hidden; }
+        #sidebar { width: 320px; background: #181818; border-right: 1px solid #333; display: flex; flex-direction: column; }
+        .header { padding: 20px; border-bottom: 1px solid #333; text-align: center; }
+        #file-list { overflow-y: auto; flex-grow: 1; padding: 10px; }
+        .thumb-item { display: flex; align-items: center; padding: 10px; margin-bottom: 6px; background: #252525; border-radius: 8px; cursor: pointer; border: 2px solid transparent; }
+        .thumb-item.active { border-color: #4a90e2; background: #202a35; }
+        .thumb-preview { width: 80px; height: 60px; background: #000; margin-right: 15px; object-fit: cover; border-radius: 4px; border: 1px solid #444; }
+        .file-name { font-size: 12px; color: #ccc; overflow: hidden; text-overflow: ellipsis; }
+        #viewer { flex-grow: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #111; }
+        canvas { border: 4px solid #333; background-image: linear-gradient(45deg, #222 25%, transparent 25%), linear-gradient(-45deg, #222 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #222 75%), linear-gradient(-45deg, transparent 75%, #222 75%); background-size: 20px 20px; }
+        .controls { margin-top: 20px; display: flex; gap: 10px; }
+        .btn { background: #4a90e2; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .btn-save-all { background: #e67e22; width: 90%; margin: 10px auto; }
+        .btn:disabled { background: #444; cursor: not-allowed; }
+        #status { font-size: 12px; color: #888; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <div class="header">
+            <button class="btn" onclick="document.getElementById('cpdInput').click()">1. Load UI_Res.cpd</button>
+            <input type="file" id="cpdInput" accept=".cpd,.zip" hidden>
+            <div id="status">Ready</div>
+            <button class="btn btn-save-all" id="downloadCpdBtn" onclick="saveFullCPD()" disabled>4. Download New .cpd</button>
+        </div>
+        <div id="file-list"></div>
+    </div>
+
+    <div id="viewer">
+        <h2 id="current-label">Open a CPD file to start</h2>
+        <canvas id="mainCanvas" width="640" height="480"></canvas>
+        
+        <div class="controls">
+            <input type="file" id="pngInput" accept="image/png" hidden>
+            <button class="btn" id="uploadBtn" onclick="document.getElementById('pngInput').click()" disabled>2. Replace with PNG</button>
+            <button class="btn" style="background:#27ae60" id="applyBtn" onclick="applyChanges()" disabled>3. Apply Changes</button>
+        </div>
+    </div>
+
+    <script>
+        const cpdInput = document.getElementById('cpdInput');
+        const pngInput = document.getElementById('pngInput');
+        const fileListContainer = document.getElementById('file-list');
+        const mainCanvas = document.getElementById('mainCanvas');
+        const ctx = mainCanvas.getContext('2d');
+        const currentLabel = document.getElementById('current-label');
+        const status = document.getElementById('status');
+        
+        const W = 640, H = 480;
+        let zip = null;
+        let activeFileName = "";
+        let modifiedFiles = {}; // Stores Uint8Arrays of changed images
+
+        // 1. LOAD CPD (ZIP)
+        cpdInput.onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            status.innerText = "Extracting...";
+            fileListContainer.innerHTML = '';
+            
+            try {
+                const data = await file.arrayBuffer();
+                zip = await JSZip.loadAsync(data);
+                
+                for (let filename in zip.files) {
+                    if (filename.endsWith('.raw')) {
+                        const content = await zip.file(filename).async("uint8array");
+                        createThumb(filename, content);
+                    }
+                }
+                status.innerText = "Loaded successfully.";
+                document.getElementById('downloadCpdBtn').disabled = false;
+            } catch (err) {
+                status.innerText = "Error: Not a valid CPD/ZIP";
+            }
+        };
+
+        function createThumb(name, buffer) {
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = W; tempCanvas.height = H;
+            renderToCanvas(buffer, tempCanvas.getContext('2d'));
+            
+            const div = document.createElement('div');
+            div.className = 'thumb-item';
+            div.id = "item-" + name;
+            div.innerHTML = `<img class="thumb-preview" src="${tempCanvas.toDataURL()}"><span class="file-name">${name}</span>`;
+            
+            div.onclick = () => {
+                activeFileName = name;
+                document.querySelectorAll('.thumb-item').forEach(el => el.classList.remove('active'));
+                div.classList.add('active');
+                currentLabel.innerText = `Editing: ${name}`;
+                
+                // Show modified version if it exists, otherwise original
+                const dataToShow = modifiedFiles[name] || buffer;
+                renderToCanvas(dataToShow, ctx);
+                document.getElementById('uploadBtn').disabled = false;
+                document.getElementById('applyBtn').disabled = false;
+            };
+            fileListContainer.appendChild(div);
+        }
+
+        function renderToCanvas(buffer, targetCtx) {
+            const imgData = targetCtx.createImageData(W, H);
+            for (let i = 0; i < Math.min(buffer.length, W * H * 4); i += 4) {
+                imgData.data[i] = buffer[i+2]; // R
+                imgData.data[i+1] = buffer[i+1]; // G
+                imgData.data[i+2] = buffer[i]; // B
+                imgData.data[i+3] = buffer[i+3]; // A
+            }
+            targetCtx.putImageData(imgData, 0, 0);
+        }
+
+        // 2. UPLOAD PNG
+        pngInput.onchange = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const img = new Image();
+            img.onload = () => {
+                ctx.clearRect(0, 0, W, H);
+                ctx.drawImage(img, 0, 0, W, H);
+            };
+            img.src = URL.createObjectURL(file);
+        };
+
+        // 3. APPLY CHANGES (Convert Canvas back to BGRA)
+        function applyChanges() {
+            const imgData = ctx.getImageData(0, 0, W, H).data;
+            const bgraBuffer = new Uint8Array(W * H * 4);
+            for (let i = 0; i < imgData.length; i += 4) {
+                bgraBuffer[i]   = imgData[i + 2]; // B
+                bgraBuffer[i+1] = imgData[i + 1]; // G
+                bgraBuffer[i+2] = imgData[i];     // R
+                bgraBuffer[i+3] = imgData[i + 3]; // A
+            }
+            modifiedFiles[activeFileName] = bgraBuffer;
+            
+            // Update the sidebar thumbnail
+            const thumbImg = document.querySelector(`#item-${CSS.escape(activeFileName)} .thumb-preview`);
+            thumbImg.src = mainCanvas.toDataURL();
+            status.innerText = `Applied changes to ${activeFileName}`;
+        }
+
+        // 4. SAVE NEW CPD
+        async function saveFullCPD() {
+            status.innerText = "Building CPD...";
+            
+            // Inject all modified files into the ZIP object
+            for (let name in modifiedFiles) {
+                zip.file(name, modifiedFiles[name]);
+            }
+
+            const content = await zip.generateAsync({type:"blob", compression: "STORE"});
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(content);
+            link.download = "UI_Res.cpd";
+            link.click();
+            status.innerText = "Saved UI_Res.cpd";
+        }
+    </script>
+</body>
+</html>
